@@ -131,8 +131,27 @@ async def __handle_download_internal(client: Client, message, url, status_msg, i
                 last_up_time[0] = now
                 last_up_size[0] = current
 
+        # ✅ Check if file exists before attempting upload
+        if not os.path.exists(filename):
+            error_msg = f"File not found before upload: {filename}"
+            upload_q.put({'upload_error': error_msg})
+            try:
+                if progress_chat_id:
+                    await client.send_message(progress_chat_id, f"<blockquote>❌ ᴜᴘʟᴏᴀᴅ ғᴀɪʟᴇᴅ ғᴏʀ {title}: File not found</blockquote>", parse_mode=ParseMode.HTML)
+            except Exception:
+                pass
+            active_uploads[0] -= 1
+            return
+
+        # ✅ Wait a moment to ensure file is fully written
+        await asyncio.sleep(0.5)
+        
         try:
             async with upload_semaphore:
+                # ✅ Double-check file still exists after acquiring semaphore
+                if not os.path.exists(filename):
+                    raise FileNotFoundError(f"File disappeared during upload preparation: {filename}")
+                
                 # Add explicit file_name so Telegram does not infer weird numeric names
                 ext = os.path.splitext(filename)[1] or ".mkv"
                 actual_file_name = f"{title}{ext}"
@@ -182,19 +201,28 @@ async def __handle_download_internal(client: Client, message, url, status_msg, i
                 if user_chat_id and user_chat_id != chat_id:
                     await check_and_schedule_autodel(user_chat_id)
 
+        except FileNotFoundError as fnf_err:
+            upload_q.put({'upload_error': str(fnf_err)})
+            try:
+                if progress_chat_id:
+                    await client.send_message(progress_chat_id, f"<blockquote>❌ ᴜᴘʟᴏᴀᴅ ғᴀɪʟᴇᴅ ғᴏʀ {title}: File not found (download may have failed)</blockquote>", parse_mode=ParseMode.HTML)
+            except Exception:
+                pass
         except Exception as e:
-
             upload_q.put({'upload_error': str(e)})
             try:
-                await client.send_message(progress_chat_id, f"<blockquote>❌ ᴜᴘʟᴏᴀᴅ ғᴀɪʟᴇᴅ ғᴏʀ {title}: {str(e)}</blockquote>", parse_mode=ParseMode.HTML)
+                if progress_chat_id:
+                    await client.send_message(progress_chat_id, f"<blockquote>❌ ᴜᴘʟᴏᴀᴅ ғᴀɪʟᴇᴅ ғᴏʀ {title}: {str(e)}</blockquote>", parse_mode=ParseMode.HTML)
             except Exception:
                 pass
         finally:
             active_uploads[0] -= 1
+            # ✅ Only delete if file exists
             try:
-                os.unlink(filename)
-            except:
-                pass
+                if os.path.exists(filename):
+                    os.unlink(filename)
+            except Exception as e:
+                print(f"Warning: Could not delete file {filename}: {e}")
 
     async def monitor():
         current_episode_title = "Unknown"
