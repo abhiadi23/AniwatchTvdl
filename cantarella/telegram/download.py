@@ -100,6 +100,7 @@ async def __handle_download_internal(client: Client, message, url, status_msg, i
     uploaded_messages = []
     active_uploads = [0]
     error = [None]
+    files_being_uploaded = set()  # ✅ Track files currently being uploaded
 
     async def do_upload(filename, title):
         last_up_time = [time.time()]
@@ -141,6 +142,7 @@ async def __handle_download_internal(client: Client, message, url, status_msg, i
             except Exception:
                 pass
             active_uploads[0] -= 1
+            files_being_uploaded.discard(filename)  # ✅ Remove from tracking
             return
 
         # ✅ Wait a moment to ensure file is fully written
@@ -217,6 +219,7 @@ async def __handle_download_internal(client: Client, message, url, status_msg, i
                 pass
         finally:
             active_uploads[0] -= 1
+            files_being_uploaded.discard(filename)  # ✅ Remove from tracking
             # ✅ Only delete if file exists
             try:
                 if os.path.exists(filename):
@@ -251,6 +254,13 @@ async def __handle_download_internal(client: Client, message, url, status_msg, i
                         title = info['title']
                         current_episode_title = title
                         if is_video_file(filename):
+                            # ✅ Check if this file is already being uploaded
+                            if filename in files_being_uploaded:
+                                print(f"⚠️ Skipping duplicate upload for: {filename}")
+                                continue
+                            
+                            # ✅ Mark file as being uploaded
+                            files_being_uploaded.add(filename)
                             active_uploads[0] += 1
                             text = f"<blockquote>📤 **ᴅᴏᴡɴʟᴏᴀᴅ ᴄᴏᴍᴘʟᴇᴛᴇ!**\nꜱᴛᴀʀᴛɪɴɢ ᴜᴘʟᴏᴀᴅ: {title}...</blockquote>"
                             task = asyncio.create_task(do_upload(filename, title))
