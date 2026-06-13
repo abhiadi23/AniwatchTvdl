@@ -12,6 +12,8 @@ class AnimetsuScraper:
     BASE_URL = "https://animetsu.live"
     API_URL = f"{BASE_URL}/v2/api"
     PROXY_URL = "https://swiftstream.top/proxy" # Fallback if need_proxy is true
+    # Tor SOCKS5 Proxy Configuration
+    TOR_PROXY = "socks5://127.0.0.1:9050"
 
     HEADERS = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -27,6 +29,10 @@ class AnimetsuScraper:
         self.binary_path = self._get_binary_path()
         self.proxy = get_random_proxy()
         self.session = c_requests.Session()
+        self.session.proxies.update({
+            "http": TOR_PROXY,
+            "https": TOR_PROXY
+        })
         proxy_dict = get_proxy_dict(self.proxy)
         if proxy_dict:
             self.session.proxies.update(proxy_dict)
