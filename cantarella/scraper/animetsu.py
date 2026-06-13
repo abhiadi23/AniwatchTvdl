@@ -30,8 +30,8 @@ class AnimetsuScraper:
         self.proxy = get_random_proxy()
         self.session = c_requests.Session()
         self.session.proxies.update({
-            "http": TOR_PROXY,
-            "https": TOR_PROXY
+            "http": self.TOR_PROXY,
+            "https": self.TOR_PROXY
         })
         proxy_dict = get_proxy_dict(self.proxy)
         if proxy_dict:
