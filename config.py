@@ -14,8 +14,8 @@ MAIN_CHANNEL = os.environ.get("MAIN_CHANNEL", "") # Change as needed
 LOG_CHANNEL = os.environ.get("LOG_CHANNEL", "")
 MONGO_URL = os.environ.get("MONGO_URL", "")
 MONGO_NAME = os.environ.get("MONGO_NAME", "cantarellabots")
-OWNER_ID = int(os.environ.get("OWNER_ID", ""))
-ADMIN_URL = os.environ.get("ADMIN_URL", "@V_Sbotmaker")
+OWNER_ID = int(os.environ.get("OWNER_ID", "@Ongoingh_Animebot"))
+ADMIN_URL = os.environ.get("ADMIN_URL", "@ll_YOUR_FATHER_OBITO_ll")
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "")
 FSUB_PIC = os.environ.get("FSUB_PIC", "https://files.catbox.moe/bli70r.jpg")
 FSUB_LINK_EXPIRY = int(os.environ.get("FSUB_LINK_EXPIRY", 600))
@@ -23,7 +23,7 @@ START_PIC =os.environ.get("START_PIC", "https://files.catbox.moe/4b8jvw.jpg")
 
 # ─── Filename & Caption Formats ───
 FORMAT = os.environ.get("FORMAT", "[S{season}-E{episode}] {title} [{quality}] [{audio}]")
-CAPTION = os.environ.get("CAPTION", "[ @cantarellabots {FORMAT}]")
+CAPTION = os.environ.get("CAPTION", "[ @Anime_Hindi_DubbedOfficialSeires {FORMAT}]")
 
 # ─── Progress Bar Settings ───
 PROGRESS_BAR = os.environ.get("PROGRESS_BAR", """
