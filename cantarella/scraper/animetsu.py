@@ -11,7 +11,7 @@ from pathlib import Path
 class AnimetsuScraper:
     BASE_URL = "https://animetsu.live"
     API_URL = f"{BASE_URL}/v2/api"
-    PROXY_URL = "https://swiftstream.top/proxy" # Fallback if need_proxy is true
+    PROXY_URL = "https://swiftstream.top/proxy"  # Fallback if need_proxy is true
     # Tor SOCKS5 Proxy Configuration
     TOR_PROXY = "socks5://127.0.0.1:9050"
 
@@ -204,8 +204,8 @@ class AnimetsuScraper:
         parts = url.split('/')
         if "watch" in parts:
             idx = parts.index("watch")
-            anime_id = parts[idx+1]
-            ep_num = parts[idx+2]
+            anime_id = parts[idx + 1]
+            ep_num = parts[idx + 2]
         else:
             anime_id = parts[-2]
             ep_num = parts[-1]
@@ -235,6 +235,9 @@ class AnimetsuScraper:
             return False
 
         # 2. Select Source and Quality
+        # NOTE: Animetsu/kite typically returns a single entry with quality="master",
+        # i.e. an HLS *master* playlist containing the actual variant streams internally.
+        # There is usually nothing else to match against when quality="auto".
         sources = sub_data['sources']
         selected_source = sources[0]
         if quality != "auto":
@@ -244,12 +247,16 @@ class AnimetsuScraper:
                     break
 
         m3u8_url = selected_source['url']
-        qual_str = selected_source.get('quality', 'auto').replace('p', '')
+        raw_quality = selected_source.get('quality', 'auto')
+        # Avoid literal "masterp" filenames when quality is a master playlist marker
+        qual_str = raw_quality.replace('p', '') if raw_quality.lower() != 'master' else 'auto'
 
         # 3. Preparation
         def sanitize(name): return re.sub(r'[\\/*?:"<>|]', "", name)
-        try: from config import FORMAT
-        except ImportError: FORMAT = "[S{season}-E{episode}] {title} [{quality}] [{audio}]"
+        try:
+            from config import FORMAT
+        except ImportError:
+            FORMAT = "[S{season}-E{episode}] {title} [{quality}] [{audio}]"
 
         if is_dub_only:
             audio_label = "EN"
@@ -262,7 +269,7 @@ class AnimetsuScraper:
             season=season_override or "1",
             episode=ep_num_override or ep_num,
             title=anime_name,
-            quality=f"{qual_str}p",
+            quality=f"{qual_str}p" if qual_str != 'auto' else 'auto',
             audio=audio_label
         ))
 
@@ -274,10 +281,16 @@ class AnimetsuScraper:
         final_file = self.download_path / f"{base_filename}.mkv"
 
         if self.progress_queue:
-            self.progress_queue.put({'status': f"📥 **Downloading (Animetsu): {anime_name} [{qual_str}p]**\nPlease wait..."})
+            self.progress_queue.put({'status': f"📥 **Downloading (Animetsu): {anime_name} [{qual_str}]**\nPlease wait..."})
 
         # 4. Download tracks
         def run_n_m3u8dl(dl_url, save_name, dl_type='sub'):
+            if not self.binary_path:
+                if self.progress_queue:
+                    self.progress_queue.put({'error': "N_m3u8DL-RE binary not found. Check binary_path / PATH."})
+                print("=== N_m3u8DL-RE FAILURE: binary not found ===")
+                return False
+
             cmd = [
                 str(self.binary_path), dl_url,
                 "--save-dir", str(task_dir),
@@ -291,11 +304,21 @@ class AnimetsuScraper:
             ]
             if self.proxy: cmd.extend(["--custom-proxy", self.proxy])
 
-            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0)
+            log_lines = []
+            try:
+                process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0)
+            except Exception as e:
+                if self.progress_queue:
+                    self.progress_queue.put({'error': f"Failed to launch N_m3u8DL-RE: {e}"})
+                print(f"=== N_m3u8DL-RE FAILURE: launch error: {e} ===")
+                return False
+
             while True:
                 line = process.stdout.readline()
                 if not line: break
                 line = line.decode('utf-8', errors='replace').strip()
+                if line:
+                    log_lines.append(line)
 
                 if "%" in line and self.progress_queue:
                     percent_match = re.search(r"(\d+(\.\d+)?)%", line)
@@ -319,12 +342,22 @@ class AnimetsuScraper:
                             'type': dl_type,
                             'title': f"Episode {ep_num}"
                         })
+
             process.wait()
-            return process.returncode == 0
+            success = process.returncode == 0
+
+            if not success:
+                tail = "\n".join(log_lines[-15:]) if log_lines else "(no output captured)"
+                err_summary = f"N_m3u8DL-RE exited {process.returncode} for {save_name}:\n{tail}"
+                if self.progress_queue:
+                    self.progress_queue.put({'error': err_summary})
+                print(f"=== N_m3u8DL-RE FAILURE ({save_name}) ===\n{tail}\n===")
+
+            return success
 
         # Download Sub (Main Video)
         if not run_n_m3u8dl(m3u8_url, f"{base_filename}_sub", 'sub'):
-            if self.progress_queue: self.progress_queue.put({'error': 'Video download failed'})
+            shutil.rmtree(task_dir, ignore_errors=True)
             return False
 
         # Download Dub (Audio Only) if available
@@ -345,7 +378,8 @@ class AnimetsuScraper:
                     if r.status_code == 200:
                         with open(sub_path, 'wb') as f: f.write(r.content)
                         sub_files.append((sub_path, lang))
-                except: pass
+                except Exception:
+                    pass
 
         # 6. Merge with ffmpeg
         # Identify downloaded files
@@ -355,6 +389,7 @@ class AnimetsuScraper:
 
         if not video_temp.exists():
             if self.progress_queue: self.progress_queue.put({'error': 'Video file missing after download.'})
+            shutil.rmtree(task_dir, ignore_errors=True)
             return False
 
         if not dub_downloaded and not sub_files:
@@ -377,8 +412,11 @@ class AnimetsuScraper:
             if sub_files: cmd.extend(['-disposition:s:0', 'default'])
 
             cmd.append(str(final_file))
-            try: subprocess.run(cmd, check=True, capture_output=True)
-            except: video_temp.replace(final_file)
+            try:
+                subprocess.run(cmd, check=True, capture_output=True)
+            except Exception as e:
+                print(f"ffmpeg merge failed, falling back to raw video: {e}")
+                video_temp.replace(final_file)
 
         shutil.rmtree(task_dir, ignore_errors=True)
         if self.progress_queue:
