@@ -1,6 +1,7 @@
 #@cantarellabots
 from pyrogram.enums import ParseMode
 from pyrogram import Client
+from pyrogram.errors import FloodWait
 from queue import Queue, Empty
 from threading import Thread
 import asyncio
@@ -50,13 +51,12 @@ async def _handle_download(client: Client, message, url, status_msg, is_playlist
     # If the request didn't come from LOG_CHANNEL and LOG_CHANNEL is valid, try to create a new status message there or reuse
     if progress_chat_id and getattr(status_msg, "chat", None) and getattr(status_msg.chat, "id", None) != progress_chat_id:
         try:
-            from pyrogram.errors import FloodWait
             new_status_msg = await client.send_message(progress_chat_id, f"<blockquote>🔄 ꜱᴛᴀʀᴛɪɴɢ ᴘʀᴏᴄᴇꜱꜱ ғᴏʀ: {url}</blockquote>", parse_mode=ParseMode.HTML)
             status_msg = new_status_msg
             await asyncio.sleep(1)
         except FloodWait as e:
             print(f"FloodWait on progress message: {e}. Suppressing.")
-            progress_chat_id = None # Disable progress updates for this run if we hit floodwait
+            progress_chat_id = None  # Disable progress updates for this run if we hit floodwait
             pass
         except Exception as e:
             print(f"Failed to send status to LOG_CHANNEL: {e}")
@@ -147,85 +147,122 @@ async def __handle_download_internal(client: Client, message, url, status_msg, i
 
         # ✅ Wait a moment to ensure file is fully written
         await asyncio.sleep(0.5)
-        
-        try:
-            async with upload_semaphore:
-                # ✅ Double-check file still exists after acquiring semaphore
-                if not os.path.exists(filename):
-                    raise FileNotFoundError(f"File disappeared during upload preparation: {filename}")
-                
-                # Add explicit file_name so Telegram does not infer weird numeric names
-                ext = os.path.splitext(filename)[1] or ".mkv"
-                actual_file_name = f"{title}{ext}"
 
-                # Try to use CAPTION config format if possible
-                file_caption = ""
-                try:
-                    from config import CAPTION
-                    file_caption = CAPTION.replace("{FORMAT}", title)
-                except Exception:
-                    file_caption = title
+        # --- Upload with FloodWait retry handling ---
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                async with upload_semaphore:
+                    # ✅ Double-check file still exists after acquiring semaphore
+                    if not os.path.exists(filename):
+                        raise FileNotFoundError(f"File disappeared during upload preparation: {filename}")
 
-                thumb_path = "thumb.jpg" if os.path.exists("thumb.jpg") else None
+                    # Add explicit file_name so Telegram does not infer weird numeric names
+                    ext = os.path.splitext(filename)[1] or ".mkv"
+                    actual_file_name = f"{title}{ext}"
 
-                up_msg = await client.send_document(
-                    chat_id,
-                    document=filename,
-                    file_name=actual_file_name,
-                    thumb=thumb_path,
-                    caption=file_caption,
-                    progress=up_cb
-                )
-                uploaded_messages.append(up_msg)
-                upload_q.put({'uploaded': True})
-
-                # --- Auto-Delete Logic for User PM ---
-                # Check if this is a private chat (user PM) or if we should delete in the target chat too
-                async def check_and_schedule_autodel(target_id):
+                    # Try to use CAPTION config format if possible
+                    file_caption = ""
                     try:
-                        chat = await client.get_chat(target_id)
-                        if chat.type == "private":
-                            autodel_time = await db.get_user_setting(0, "autodel_time", 0)
-                            if autodel_time > 0:
-                                mins = autodel_time // 60
-                                notify_msg = await client.send_message(
-                                    target_id,
-                                    f"<blockquote>🗑️ <b>ᴛʜɪꜱ ғɪʟᴇ ᴡɪʟʟ ʙᴇ ᴅᴇʟᴇᴛᴇᴅ ᴀғᴛᴇʀ {mins} ᴍɪɴ ({autodel_time}ꜱ).</b>\n"
-                                    "<i>ᴍᴀᴋᴇ ꜱᴜʀᴇ ᴛᴏ ꜱᴀᴠᴇ ɪᴛ ɪɴ ʏᴏᴜʀ 'ꜱᴀᴠᴇᴅ ᴍᴇꜱꜱᴀɢᴇꜱ' ɪғ ʏᴏᴜ ᴡᴀɴᴛ ᴛᴏ ᴋᴇᴇᴘ ɪᴛ!</i></blockquote>",
-                                    reply_to_message_id=up_msg.id,
-                                    parse_mode=ParseMode.HTML
-                                )
-                                asyncio.create_task(schedule_deletion(client, target_id, up_msg.id, autodel_time, notify_msg.id))
+                        from config import CAPTION
+                        file_caption = CAPTION.replace("{FORMAT}", title)
+                    except Exception:
+                        file_caption = title
+
+                    thumb_path = "thumb.jpg" if os.path.exists("thumb.jpg") else None
+
+                    up_msg = await client.send_document(
+                        chat_id,
+                        document=filename,
+                        file_name=actual_file_name,
+                        thumb=thumb_path,
+                        caption=file_caption,
+                        progress=up_cb
+                    )
+                    uploaded_messages.append(up_msg)
+                    upload_q.put({'uploaded': True})
+
+                    # --- Auto-Delete Logic for User PM ---
+                    async def check_and_schedule_autodel(target_id):
+                        try:
+                            chat = await client.get_chat(target_id)
+                            if chat.type == "private":
+                                autodel_time = await db.get_user_setting(0, "autodel_time", 0)
+                                if autodel_time > 0:
+                                    mins = autodel_time // 60
+                                    notify_msg = await client.send_message(
+                                        target_id,
+                                        f"<blockquote>🗑️ <b>ᴛʜɪꜱ ғɪʟᴇ ᴡɪʟʟ ʙᴇ ᴅᴇʟᴇᴛᴇᴅ ᴀғᴛᴇʀ {mins} ᴍɪɴ ({autodel_time}ꜱ).</b>\n"
+                                        "<i>ᴍᴀᴋᴇ ꜱᴜʀᴇ ᴛᴏ ꜱᴀᴠᴇ ɪᴛ ɪɴ ʏᴏᴜʀ 'ꜱᴀᴠᴇᴅ ᴍᴇꜱꜱᴀɢᴇꜱ' ɪғ ʏᴏᴜ ᴡᴀɴᴛ ᴛᴏ ᴋᴇᴇᴘ ɪᴛ!</i></blockquote>",
+                                        reply_to_message_id=up_msg.id,
+                                        parse_mode=ParseMode.HTML
+                                    )
+                                    asyncio.create_task(schedule_deletion(client, target_id, up_msg.id, autodel_time, notify_msg.id))
+                        except Exception:
+                            pass
+
+                    await check_and_schedule_autodel(chat_id)
+                    if user_chat_id and user_chat_id != chat_id:
+                        await check_and_schedule_autodel(user_chat_id)
+
+                break  # success — exit retry loop
+
+            except FloodWait as fw:
+                wait_time = fw.value + 2
+                upload_q.put({
+                    'uploading': {
+                        'percent': 0,
+                        'speed': "0 MB/s",
+                        'title': f"{title} (FloodWait: retrying in {wait_time}s)",
+                        'current': "0 MB",
+                        'total': "0 MB"
+                    }
+                })
+                try:
+                    if progress_chat_id:
+                        await client.send_message(
+                            progress_chat_id,
+                            f"<blockquote>⏳ ғʟᴏᴏᴅ ᴡᴀɪᴛ ғᴏʀ {title}: ᴡᴀɪᴛɪɴɢ {wait_time}ꜱ (ᴀᴛᴛᴇᴍᴘᴛ {attempt + 1}/{max_retries})</blockquote>",
+                            parse_mode=ParseMode.HTML
+                        )
+                except Exception:
+                    pass
+                await asyncio.sleep(wait_time)
+                if attempt == max_retries - 1:
+                    upload_q.put({'upload_error': f"FloodWait exceeded max retries: {wait_time}s"})
+                    try:
+                        if progress_chat_id:
+                            await client.send_message(progress_chat_id, f"<blockquote>❌ ᴜᴘʟᴏᴀᴅ ғᴀɪʟᴇᴅ ғᴏʀ {title}: FloodWait retries exhausted</blockquote>", parse_mode=ParseMode.HTML)
                     except Exception:
                         pass
+                continue  # retry
 
-                await check_and_schedule_autodel(chat_id)
-                if user_chat_id and user_chat_id != chat_id:
-                    await check_and_schedule_autodel(user_chat_id)
+            except FileNotFoundError as fnf_err:
+                upload_q.put({'upload_error': str(fnf_err)})
+                try:
+                    if progress_chat_id:
+                        await client.send_message(progress_chat_id, f"<blockquote>❌ ᴜᴘʟᴏᴀᴅ ғᴀɪʟᴇᴅ ғᴏʀ {title}: File not found (download may have failed)</blockquote>", parse_mode=ParseMode.HTML)
+                except Exception:
+                    pass
+                break
 
-        except FileNotFoundError as fnf_err:
-            upload_q.put({'upload_error': str(fnf_err)})
-            try:
-                if progress_chat_id:
-                    await client.send_message(progress_chat_id, f"<blockquote>❌ ᴜᴘʟᴏᴀᴅ ғᴀɪʟᴇᴅ ғᴏʀ {title}: File not found (download may have failed)</blockquote>", parse_mode=ParseMode.HTML)
-            except Exception:
-                pass
-        except Exception as e:
-            upload_q.put({'upload_error': str(e)})
-            try:
-                if progress_chat_id:
-                    await client.send_message(progress_chat_id, f"<blockquote>❌ ᴜᴘʟᴏᴀᴅ ғᴀɪʟᴇᴅ ғᴏʀ {title}: {str(e)}</blockquote>", parse_mode=ParseMode.HTML)
-            except Exception:
-                pass
-        finally:
-            active_uploads[0] -= 1
-            files_being_uploaded.discard(filename)  # ✅ Remove from tracking
-            # ✅ Only delete if file exists
-            try:
-                if os.path.exists(filename):
-                    os.unlink(filename)
             except Exception as e:
-                print(f"Warning: Could not delete file {filename}: {e}")
+                upload_q.put({'upload_error': str(e)})
+                try:
+                    if progress_chat_id:
+                        await client.send_message(progress_chat_id, f"<blockquote>❌ ᴜᴘʟᴏᴀᴅ ғᴀɪʟᴇᴅ ғᴏʀ {title}: {str(e)}</blockquote>", parse_mode=ParseMode.HTML)
+                except Exception:
+                    pass
+                break
+
+        active_uploads[0] -= 1
+        files_being_uploaded.discard(filename)  # ✅ Remove from tracking
+        # ✅ Only delete if file exists
+        try:
+            if os.path.exists(filename):
+                os.unlink(filename)
+        except Exception as e:
+            print(f"Warning: Could not delete file {filename}: {e}")
 
     async def monitor():
         current_episode_title = "Unknown"
@@ -258,7 +295,7 @@ async def __handle_download_internal(client: Client, message, url, status_msg, i
                             if filename in files_being_uploaded:
                                 print(f"⚠️ Skipping duplicate upload for: {filename}")
                                 continue
-                            
+
                             # ✅ Mark file as being uploaded
                             files_being_uploaded.add(filename)
                             active_uploads[0] += 1
