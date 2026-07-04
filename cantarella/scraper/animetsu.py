@@ -12,7 +12,6 @@ class AnimetsuScraper:
     BASE_URL = "https://animetsu.live"
     API_URL = f"{BASE_URL}/v2/api"
     PROXY_URL = "https://swiftstream.top/proxy" # Fallback if need_proxy is true
-    TOR_PROXY = "socks5://127.0.0.1:9050"
 
     HEADERS = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -26,8 +25,11 @@ class AnimetsuScraper:
         self.download_path.mkdir(exist_ok=True)
         self.progress_queue = progress_queue
         self.binary_path = self._get_binary_path()
+        self.proxy = get_random_proxy()
         self.session = c_requests.Session()
-        self.session.proxies.update({"http": self.TOR_PROXY, "https": self.TOR_PROXY})
+        proxy_dict = get_proxy_dict(self.proxy)
+        if proxy_dict:
+            self.session.proxies.update(proxy_dict)
 
     def _get_binary_path(self):
         candidates = [
@@ -73,6 +75,7 @@ class AnimetsuScraper:
         return None
 
     def list_episodes(self, anime_id):
+        # anime_id might be a URL or just the ID
         if "/" in anime_id:
             anime_id = anime_id.split('/')[-1]
 
@@ -127,6 +130,7 @@ class AnimetsuScraper:
                     airing_at = item.get('airing_at')
                     time_str = "Unknown"
                     if airing_at:
+                        # Animetsu provides timestamp in milliseconds
                         dt = datetime.fromtimestamp(airing_at / 1000)
                         time_str = dt.strftime("%H:%M")
 
@@ -152,7 +156,7 @@ class AnimetsuScraper:
                         src['url'] = f"{self.PROXY_URL}{src['url']}"
                     elif src['url'].startswith('/'):
                         src['url'] = f"{self.BASE_URL}{src['url']}"
-                    return data
+                return data
         except Exception as e:
             print(f"Animetsu sources error: {e}")
         return None
@@ -190,6 +194,7 @@ class AnimetsuScraper:
         return {}
 
     def download_episode(self, url, quality="auto", name_override=None, season_override=None, ep_num_override=None):
+        # URL format: https://animetsu.live/watch/anime_id/ep_num
         parts = url.split('/')
         if "watch" in parts:
             idx = parts.index("watch")
@@ -207,11 +212,13 @@ class AnimetsuScraper:
         title_dict = info.get('title', {})
         anime_name = name_override or title_dict.get('english') or title_dict.get('romaji') or title_dict.get('native')
 
+        # 1. Fetch Sub & Dub data
         sub_data = self.get_episode_sources(anime_id, ep_num, source_type='sub')
         dub_data = self.get_episode_sources(anime_id, ep_num, source_type='dub')
 
         is_dub_only = False
         if not sub_data or not sub_data.get('sources'):
+            # If no sub, try using dub as primary
             if dub_data and dub_data.get('sources'):
                 sub_data = dub_data
                 dub_data = None
@@ -221,6 +228,7 @@ class AnimetsuScraper:
             if self.progress_queue: self.progress_queue.put({'error': 'Could not find video sources on Animetsu.'})
             return False
 
+        # 2. Select Source and Quality
         sources = sub_data['sources']
         selected_source = sources[0]
         if quality != "auto":
@@ -232,6 +240,7 @@ class AnimetsuScraper:
         m3u8_url = selected_source['url']
         qual_str = selected_source.get('quality', 'auto').replace('p', '')
 
+        # 3. Preparation
         def sanitize(name): return re.sub(r'[\\/*?:"<>|]', "", name)
         try: from config import FORMAT
         except ImportError: FORMAT = "[S{season}-E{episode}] {title} [{quality}] [{audio}]"
@@ -261,6 +270,7 @@ class AnimetsuScraper:
         if self.progress_queue:
             self.progress_queue.put({'status': f"📥 **Downloading (Animetsu): {anime_name} [{qual_str}p]**\nPlease wait..."})
 
+        # 4. Download tracks
         def run_n_m3u8dl(dl_url, save_name, dl_type='sub'):
             cmd = [
                 str(self.binary_path), dl_url,
@@ -273,7 +283,7 @@ class AnimetsuScraper:
                 "--download-retry-count", "5",
                 "--auto-select"
             ]
-            if self.TOR_PROXY: cmd.extend(["--custom-proxy", self.TOR_PROXY])
+            if self.proxy: cmd.extend(["--custom-proxy", self.proxy])
 
             process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0)
             while True:
@@ -284,6 +294,7 @@ class AnimetsuScraper:
                 if "%" in line and self.progress_queue:
                     percent_match = re.search(r"(\d+(\.\d+)?)%", line)
                     if percent_match:
+                        # Improved parsing for speed and sizes
                         parts = re.split(r"\d+(\.\d+)?%", line)
                         speed_match = None
                         if len(parts) > 1:
@@ -305,16 +316,19 @@ class AnimetsuScraper:
             process.wait()
             return process.returncode == 0
 
+        # Download Sub (Main Video)
         if not run_n_m3u8dl(m3u8_url, f"{base_filename}_sub", 'sub'):
             if self.progress_queue: self.progress_queue.put({'error': 'Video download failed'})
             return False
 
+        # Download Dub (Audio Only) if available
         dub_downloaded = False
         if dub_data and dub_data.get('sources'):
             dub_m3u8 = dub_data['sources'][0]['url']
             if run_n_m3u8dl(dub_m3u8, f"{base_filename}_dub", 'dub'):
                 dub_downloaded = True
 
+        # 5. Extract Subs
         sub_files = []
         if sub_data.get('subs'):
             for i, s in enumerate(sub_data['subs']):
@@ -327,6 +341,8 @@ class AnimetsuScraper:
                         sub_files.append((sub_path, lang))
                 except: pass
 
+        # 6. Merge with ffmpeg
+        # Identify downloaded files
         for f in task_dir.iterdir():
             if f.name.startswith(f"{base_filename}_sub."): f.rename(video_temp)
             elif f.name.startswith(f"{base_filename}_dub."): f.rename(audio_temp)
