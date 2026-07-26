@@ -16,8 +16,8 @@ from pyrogram.types import (
 # NOTE: adjust these two imports to match your actual project layout —
 # `app` is assumed to be the already-configured Pyrogram Client instance.
 from bot import app
-from animex import AnimexClient, AnimexAPIError
-from downloader import AnimexDownloader, sc, bi, _card
+from .animex import AnimexClient, AnimexAPIError
+from .animexdl import AnimexDownloader, sc, bi, _card
 
 client = AnimexClient()
 downloader = AnimexDownloader(client=client)
