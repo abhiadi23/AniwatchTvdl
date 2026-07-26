@@ -102,39 +102,7 @@ async def handle_autodel(client: Client, message):
             await message.reply("<blockquote>✅ <b>ɢʟᴏʙᴀʟ ᴀᴜᴛᴏ-ᴅᴇʟᴇᴛᴇ ᴅɪꜱᴀʙʟᴇᴅ.</b></blockquote>", parse_mode=ParseMode.HTML)
     except ValueError:
         await message.reply("<blockquote>❌ ɪɴᴠᴀʟɪᴅ ғᴏʀᴍᴀᴛ. ᴜꜱᴇ: <code>/autodel 600</code></blockquote>", parse_mode=ParseMode.HTML)
-
-@Client.on_message(filters.command(["ongoing", "schedule"]))
-@check_ban
-@check_fsub
-async def handle_ongoing_schedule(client: Client, message):
-    from cantarella.telegram.ongoing import fetch_schedule_list
-
-    status_msg = await client.send_photo(
-        message.chat.id,
-        photo=get_random_image(),
-        caption="<blockquote>📆 <b>ғᴇᴛᴄʜɪɴɢ ᴛᴏᴅᴀʏ'ꜱ ᴀɴɪᴍᴇ ʀᴇʟᴇᴀꜱᴇ ꜱᴄʜᴇᴅᴜʟᴇ...</b></blockquote>",
-        parse_mode=ParseMode.HTML
-    )
-    active_source = await db.get_user_setting(0, "active_source", "animetsu")
-    schedule = await asyncio.to_thread(fetch_schedule_list, source=active_source)
-
-    if not schedule:
-        await status_msg.edit_caption("<blockquote>❌ <b>ɴᴏ ᴀɴɪᴍᴇ ꜱᴄʜᴇᴅᴜʟᴇᴅ ғᴏʀ ᴛᴏᴅᴀʏ ᴏʀ ғᴀɪʟᴇᴅ ᴛᴏ ғᴇᴛᴄʜ.</b></blockquote>", parse_mode=ParseMode.HTML)
-        return
-
-    date_str = datetime.now().strftime("%d %b %Y")
-    text = f"<blockquote>📆 <b>ᴛᴏᴅᴀʏ'ꜱ ᴀɴɪᴍᴇ ʀᴇʟᴇᴀꜱᴇꜱ ꜱᴄʜᴇᴅᴜʟᴇ [{date_str}] [ɪꜱᴛ]</b>\n\n"
-
-    for item in schedule:
-        item_title = item['title']
-        entry = f"• <b>{item_title}</b>\n  🕒 ᴛɪᴍᴇ: {item['time']} ʜʀꜱ\n\n"
-        if len(text + entry + "</blockquote>") > 1024:
-            break
-        text += entry
-    text += "</blockquote>"
-
-    await status_msg.edit_caption(text, parse_mode=ParseMode.HTML)
-
+        
 @Client.on_message(filters.private & filters.command("start"))
 @check_ban
 @check_fsub
