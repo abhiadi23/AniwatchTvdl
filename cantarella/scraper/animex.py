@@ -83,6 +83,18 @@ class AnimexClient:
             self.session = requests.Session(impersonate=self.impersonate)
         self.session.headers.update(DEFAULT_HEADERS)
 
+    def download_headers(self) -> dict[str, str]:
+        """Origin/Referer/User-Agent this client uses for the animex.one API —
+        reused for the actual CDN (m3u8/segment) requests too, so downloads
+        look like they're coming from the same client as the API calls
+        instead of a mismatched/hardcoded header set. This is what prevents
+        403s from the CDN."""
+        return {
+            "User-Agent": self.session.headers.get("User-Agent", DEFAULT_HEADERS["User-Agent"]),
+            "Origin": self.session.headers.get("Origin", DEFAULT_HEADERS["Origin"]),
+            "Referer": self.session.headers.get("Referer", DEFAULT_HEADERS["Referer"]),
+        }
+
     def _get(self, url: str, params: dict[str, Any] | None = None) -> Any:
         resp = self.session.get(
             url, params=params, timeout=self.timeout, impersonate=self.impersonate
