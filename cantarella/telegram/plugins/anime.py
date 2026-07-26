@@ -112,7 +112,7 @@ async def on_pick_anime(client_app: Client, cq: CallbackQuery):
     idx = int(cq.data.split(":")[1])
     anime = session["results"][idx]
     session["anime"] = anime
-    session["anime_id"] = str(anime.get("anilistId") or anime.get("id"))
+    session["anime_id"] = str(anime.get("id") or anime.get("anilistId"))
     title = _title_of(anime)
 
     await cq.answer()
@@ -321,17 +321,17 @@ async def schedule_command(client_app: Client, message: Message):
 
     # Telegram caps photo captions at 1024 chars. A busy day's schedule can
     # blow past that, so only use the full list as the caption when it fits —
-    # otherwise still send the pic (with a short caption) and follow up with
-    # the full list as a separate message, rather than losing the pic entirely.
+    # otherwise send the full list first as plain text, then the pic with a
+    # short caption right after (pic goes with the second message).
     CAPTION_LIMIT = 1024
     photo = get_random_image()
     try:
         if len(text) <= CAPTION_LIMIT:
             await message.reply_photo(photo, caption=text, parse_mode=ParseMode.HTML)
         else:
+            await message.reply_text(text, parse_mode=ParseMode.HTML)
             header = _card(f"📅 <b>{sc('todays schedule')}</b>")
             await message.reply_photo(photo, caption=header, parse_mode=ParseMode.HTML)
-            await message.reply_text(text, parse_mode=ParseMode.HTML)
         await status.delete()
     except Exception:
         await status.edit_text(text, parse_mode=ParseMode.HTML)
