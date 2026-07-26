@@ -25,14 +25,6 @@ START_PIC =os.environ.get("START_PIC", "https://files.catbox.moe/4b8jvw.jpg")
 FORMAT = os.environ.get("FORMAT", "[S{season}-E{episode}] {title} [{quality}] [{audio}]")
 CAPTION = os.environ.get("CAPTION", "[ @Anime_Hindi_DubbedOfficialSeires {FORMAT}]")
 
-# ─── Progress Bar Settings ───
-PROGRESS_BAR = os.environ.get("PROGRESS_BAR", """
-<blockquote> {bar} </blockquote>
-<blockquote>📁 <b>{title}</b>
-⚡ Speed: {speed}
-📦 {current} / {total}</blockquote>
-""")
-
 # ─── Response Images ───
 # Rotating anime images sent with every bot reply. Add as many as you like.
 RESPONSE_IMAGES = [
