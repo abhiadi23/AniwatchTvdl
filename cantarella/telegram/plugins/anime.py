@@ -320,18 +320,17 @@ async def schedule_command(client_app: Client, message: Message):
         text = _card("\n".join(lines))
 
     # Telegram caps photo captions at 1024 chars. A busy day's schedule can
-    # blow past that, so only use the full list as the caption when it fits —
-    # otherwise send the full list first as plain text, then the pic with a
-    # short caption right after (pic goes with the second message).
+    # blow past that — previously that case sent the full text AND a photo
+    # with a short header as two separate replies, which read as a broken
+    # duplicate response. Now: send with a photo when it fits in a caption,
+    # otherwise just send the text card alone (single message either way).
     CAPTION_LIMIT = 1024
-    photo = get_random_image()
     try:
         if len(text) <= CAPTION_LIMIT:
+            photo = get_random_image()
             await message.reply_photo(photo, caption=text, parse_mode=ParseMode.HTML)
         else:
             await message.reply_text(text, parse_mode=ParseMode.HTML)
-            header = _card(f"📅 <b>{sc('todays schedule')}</b>")
-            await message.reply_photo(photo, caption=header, parse_mode=ParseMode.HTML)
         await status.delete()
     except Exception:
         await status.edit_text(text, parse_mode=ParseMode.HTML)
