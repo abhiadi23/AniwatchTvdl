@@ -1,108 +1,113 @@
+#@cantarellabots
 from __future__ import annotations
 
 import asyncio
 import logging
-import random
 
-# NOTE: adjust to match your actual project layout.
-from bot import app
-from .animex import AnimexClient, AnimexAPIError
-from .animexdl import AnimexDownloader, sc, bi, _card
-from search import RANDOM_IMAGES  # shared image pool, defined once in search.py
+from pyrogram import Client
+from pyrogram.enums import ParseMode
 
-logger = logging.getLogger("ongoing")
+from cantarella.core.database import db
+from cantarella.core.images import get_random_image
+from cantarella.scraper.animex import AnimexClient, AnimexAPIError
+from cantarella.scraper.animexdl import AnimexDownloader, sc
+from config import SET_INTERVAL, TARGET_CHAT_ID, LOG_CHANNEL
+
+logger = logging.getLogger(__name__)
 
 client = AnimexClient()
 downloader = AnimexDownloader(client=client)
 
-# TODO: set this to the chat/channel id where auto-processed episodes get posted.
-ONGOING_CHAT_ID = 0
-POLL_INTERVAL_SECONDS = 300
+# Same compatibility shim as cantarella/telegram/plugins/anime.py — kept here
+# too since this module can run standalone before that plugin is imported.
+if not hasattr(AnimexClient, "iter_providers"):
+
+    def _iter_providers(self, anime_id, ep_num, type_="sub"):
+        data = self.get_servers(anime_id, ep_num)
+        return data.get(f"{type_}Providers") or []
+
+    AnimexClient.iter_providers = _iter_providers
+
 DEFAULT_QUALITIES = ["360p", "720p", "1080p"]
 
-# Optional persistence so progress survives restarts. If you don't have a
-# `db.py` with a Mongo handle named `db`, this just runs in-memory instead.
-try:
-    from db import db  # e.g. a motor AsyncIOMotorDatabase
-except ImportError:
-    db = None
 
-_seen: dict[str, int] = {}
-
-
-async def _load_seen() -> None:
-    if db is None:
-        return
-    async for doc in db.ongoing_progress.find({}):
-        _seen[doc["anime_id"]] = doc["last_episode"]
-
-
-async def _mark_seen(anime_id: str, ep_num: int) -> None:
-    _seen[anime_id] = ep_num
-    if db is None:
-        return
-    await db.ongoing_progress.update_one(
-        {"anime_id": anime_id},
-        {"$set": {"anime_id": anime_id, "last_episode": ep_num}},
-        upsert=True,
-    )
+def _card(text: str) -> str:
+    return f"<blockquote>{text}</blockquote>"
 
 
 def _title_of(item: dict) -> str:
     return item.get("titleEnglish") or item.get("titleRomaji") or "Unknown"
 
 
-async def _process_new_episode(item: dict) -> None:
+async def _process_new_episode(client_app: Client, chat_id: int, item: dict) -> None:
     anime_id = str(item.get("id") or item.get("anilistId") or "")
     ep_num = item.get("episode") or item.get("epNum") or item.get("latestEpisode")
     if not anime_id or ep_num is None:
         return
 
-    if ep_num <= _seen.get(anime_id, 0):
+    ep_identifier = f"{anime_id}_ep_{ep_num}"
+    if await db.is_processed(ep_identifier):
         return
 
     title = _title_of(item)
-    status = await app.send_message(
-        ONGOING_CHAT_ID,
-        _card([f"🆕 {sc('new episode detected')}", "", f"🎬 {bi(title)}", f"📁 {sc('episode')} {ep_num}"]),
+    log_id = int(LOG_CHANNEL) if LOG_CHANNEL else chat_id
+
+    status = await client_app.send_message(
+        log_id,
+        _card(f"🆕 {sc('new episode detected')}\n🎬 <b>{title}</b>\n📁 {sc('episode')} {ep_num}"),
+        parse_mode=ParseMode.HTML,
     )
     try:
-        await app.send_photo(ONGOING_CHAT_ID, random.choice(RANDOM_IMAGES))
+        await client_app.send_photo(log_id, get_random_image())
     except Exception:
         pass
 
     try:
         await downloader.process_episode(
-            app, ONGOING_CHAT_ID, anime_id, ep_num,
+            client_app, chat_id, anime_id, ep_num,
             anime_title=title, qualities=DEFAULT_QUALITIES, status_msg=status,
         )
-        await _mark_seen(anime_id, ep_num)
+        await db.mark_processed(ep_identifier)
     except Exception as exc:
         logger.exception("Failed to process %s ep %s", title, ep_num)
         await status.edit_text(
-            _card([f"❌ {sc('failed')}", "", f"{bi(title)} — {sc('episode')} {ep_num}", "", str(exc)])
+            _card(f"❌ {sc('failed')}\n<b>{title}</b> — {sc('episode')} {ep_num}\n{exc}"),
+            parse_mode=ParseMode.HTML,
         )
 
 
-async def _poll_loop() -> None:
-    await _load_seen()
-    logger.info("ongoing watcher started, polling every %ss", POLL_INTERVAL_SECONDS)
-    while True:
+async def check_and_download_ongoing(client_app: Client, chat_id: int) -> None:
+    try:
+        data = await asyncio.to_thread(client.get_recent, 1)
+    except AnimexAPIError as exc:
+        logger.warning("Failed to fetch recent feed: %s", exc)
+        return
+    for item in data.get("results", []):
         try:
-            data = client.get_recent(page=1)
-            for item in data.get("results", []):
-                await _process_new_episode(item)
-        except AnimexAPIError as exc:
-            logger.warning("Failed to fetch recent feed: %s", exc)
+            await _process_new_episode(client_app, chat_id, item)
         except Exception:
-            logger.exception("Unexpected error in ongoing poll loop")
-        await asyncio.sleep(POLL_INTERVAL_SECONDS)
+            logger.exception("Error processing recent item: %s", item)
 
 
-def start_ongoing_watcher() -> None:
-    """Call once after the bot starts, e.g. inside your on_startup hook:
+async def ongoing_task(client_app: Client) -> None:
+    """Entry point unchanged from before — still started in cantarella/__main__.py
+    via `asyncio.create_task(ongoing_task(app))`."""
+    if not TARGET_CHAT_ID:
+        logger.warning("TARGET_CHAT_ID is not set — ongoing auto-downloads are disabled.")
+        return
+    try:
+        target_chat_id = int(TARGET_CHAT_ID)
+    except ValueError:
+        logger.warning("TARGET_CHAT_ID must be a valid integer chat ID — ongoing auto-downloads disabled.")
+        return
 
-        from ongoing import start_ongoing_watcher
-        start_ongoing_watcher()
-    """
-    asyncio.get_event_loop().create_task(_poll_loop())
+    logger.info("Starting ongoing checker. Interval: %ss, Target chat: %s", SET_INTERVAL, target_chat_id)
+
+    while True:
+        ongoing_enabled = await db.get_user_setting(0, "ongoing_enabled", False)
+        if ongoing_enabled:
+            try:
+                await check_and_download_ongoing(client_app, target_chat_id)
+            except Exception:
+                logger.exception("Error in ongoing task loop")
+        await asyncio.sleep(SET_INTERVAL)
