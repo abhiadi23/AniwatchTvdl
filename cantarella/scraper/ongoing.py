@@ -8,7 +8,6 @@ from pyrogram import Client
 from pyrogram.enums import ParseMode
 
 from cantarella.core.database import db
-from cantarella.core.images import get_random_image
 from cantarella.scraper.animex import AnimexClient, AnimexAPIError
 from cantarella.scraper.animexdl import AnimexDownloader, sc
 from config import SET_INTERVAL, TARGET_CHAT_ID, LOG_CHANNEL
@@ -57,10 +56,6 @@ async def _process_new_episode(client_app: Client, chat_id: int, item: dict) -> 
         _card(f"🆕 {sc('new episode detected')}\n🎬 <b>{title}</b>\n📁 {sc('episode')} {ep_num}"),
         parse_mode=ParseMode.HTML,
     )
-    try:
-        await client_app.send_photo(log_id, get_random_image())
-    except Exception:
-        pass
 
     try:
         await downloader.process_episode(
