@@ -8,7 +8,7 @@ import pyrogram.utils
 from pyrogram import Client
 from pyrogram.enums import ParseMode
 from config import API_ID, API_HASH, BOT_TOKEN
-from cantarella.telegram.ongoing import ongoing_task
+from cantarella.scraper.ongoing import ongoing_task
 
 logging.getLogger("pyrogram").setLevel(logging.WARNING)
 
