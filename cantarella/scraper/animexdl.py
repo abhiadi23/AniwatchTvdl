@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Callable, Literal, Optional
 
 from pyrogram import Client
+from pyrogram.enums import ParseMode
 from pyrogram.types import Message
 
 from .animex import AnimexClient
@@ -34,8 +35,8 @@ def sc(text: str) -> str:
 
 
 def bi(text: str) -> str:
-    """Bold + italic combined (MarkdownV2: **__text__**)."""
-    return f"**__{text}__**"
+    """Bold + italic combined (HTML, matches the bot's default ParseMode.HTML)."""
+    return f"<b><i>{text}</i></b>"
 
 
 def _progress_bar(pct: float, length: int = 10) -> str:
@@ -54,12 +55,11 @@ def _format_size(num_bytes: float) -> str:
 
 
 def _card(lines: list[str]) -> str:
-    """Every line bold+italic, whole block under a blockquote — matches the
-    requested Telegram status style."""
-    out = []
-    for line in lines:
-        out.append(">" if not line else f"> {bi(line)}")
-    return "\n".join(out)
+    """Every line bold+italic, whole block under a real HTML <blockquote> —
+    matches the requested Telegram status style (and the ParseMode.HTML the
+    client is configured with)."""
+    body = "\n".join(bi(line) if line else "" for line in lines)
+    return f"<blockquote>{body}</blockquote>"
 
 
 def _progress_card(
@@ -92,7 +92,7 @@ def _server_card(action: str, ep_num: int, quality: str, provider_name: str, idx
         f"🔄 {sc(action)}...",
         "",
         f"📁 {sc('episode')} {ep_num} • {quality}",
-        f"🌐 {sc('server')}: `{provider_name}` ({idx}/{total})",
+        f"🌐 {sc('server')}: <code>{provider_name}</code> ({idx}/{total})",
     ]
     return _card(lines)
 
@@ -346,7 +346,7 @@ class AnimexDownloader:
         if status_msg is None:
             return
         try:
-            await status_msg.edit_text(text)
+            await status_msg.edit_text(text, parse_mode=ParseMode.HTML)
         except Exception as exc:
             logger.debug("Could not edit status message: %s", exc)
 
@@ -401,14 +401,12 @@ class AnimexDownloader:
 
             actual_quality = chosen.get("quality") or quality
 
-            # API only reliably returns Origin (confirmed live); CDNs commonly
-            # also want Referer/User-Agent, so merge on top of defaults.
+            # Base headers come from the same client/session that talked to
+            # the animex.one API (Origin/Referer/User-Agent all match), then
+            # anything the sources response itself supplies (e.g. per-CDN
+            # auth headers) is layered on top.
             headers = {
-                "Referer": "https://animex.one/",
-                "User-Agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
-                ),
+                **self.client.download_headers(),
                 **(data.get("headers") or {}),
             }
 
@@ -417,7 +415,7 @@ class AnimexDownloader:
                     status_msg,
                     _progress_card(
                         "📥", "downloading", ep_num, actual_quality, pct, speed, done, tot,
-                        footer=f"🌐 {sc('server')}: `{provider_name}`",
+                        footer=f"🌐 {sc('server')}: <code>{provider_name}</code>",
                     ),
                 )
 
@@ -496,6 +494,7 @@ class AnimexDownloader:
             chat_id=chat_id,
             video=str(result.file_path),
             caption=caption,
+            parse_mode=ParseMode.HTML,
             supports_streaming=True,
             progress=progress,
         )
@@ -507,6 +506,7 @@ class AnimexDownloader:
                     chat_id=chat_id,
                     document=str(sub_path),
                     caption=f"{bi(sc('subtitle'))} • {sub_path.stem}",
+                    parse_mode=ParseMode.HTML,
                 )
                 sent_messages.append(sub_sent)
             except Exception as exc:
