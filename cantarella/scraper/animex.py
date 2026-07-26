@@ -247,6 +247,3 @@ class AnimexClient:
             if not data.get("pageInfo", {}).get("hasNextPage"):
                 break
             page += 1
-
-
-if __name__ == "__main__":
