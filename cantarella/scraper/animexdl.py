@@ -303,6 +303,49 @@ class AnimexDownloader:
         src.unlink(missing_ok=True)
         return dst
 
+    @staticmethod
+    def _lang_from_subtitle_name(path: Path) -> str:
+        """Best-effort language tag from the subtitle filename.
+        `_fetch_track_subtitles` saves as `{out_name}.{lang}.vtt`, so the
+        second-to-last dot-segment is the lang code there. N_m3u8DL-RE's own
+        naming for embedded-track vtts it pulls out itself isn't confirmed —
+        if muxed tracks show up untitled/mislabeled, paste a real filename
+        from `--auto-select` output and I'll tighten this."""
+        stem = path.stem  # strips .vtt
+        parts = stem.rsplit(".", 1)
+        return parts[1] if len(parts) == 2 and parts[1] else "und"
+
+    def _mux_subtitles(self, video_path: Path, subtitle_paths: list[Path]) -> Path | None:
+        """Soft-mux subtitle tracks into an .mkv alongside the video —
+        stream copy, no re-encode — so players show them automatically
+        instead of relying on a separately-uploaded .vtt document. Matroska
+        accepts WebVTT natively, so `-c:s copy` doesn't need to touch
+        codec/format. Only ever called when subtitle_paths is non-empty,
+        i.e. confirmed soft-sub providers; hard-sub providers (tracks=null,
+        no local vtt) never reach this path. Returns None on ffmpeg failure
+        so the caller can fall back to the old separate-upload behavior."""
+        dst = video_path.with_suffix(".mkv")
+        cmd = ["ffmpeg", "-y", "-i", str(video_path)]
+        for sub in subtitle_paths:
+            cmd += ["-i", str(sub)]
+        cmd += ["-map", "0:v", "-map", "0:a?"]
+        for i in range(1, len(subtitle_paths) + 1):
+            cmd += ["-map", f"{i}:s"]
+        cmd += ["-c:v", "copy", "-c:a", "copy", "-c:s", "copy"]
+        for i, sub in enumerate(subtitle_paths):
+            lang = self._lang_from_subtitle_name(sub)
+            cmd += [f"-metadata:s:s:{i}", f"language={lang}", f"-metadata:s:s:{i}", f"title={lang}"]
+        cmd += [str(dst)]
+
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode != 0 or not dst.exists():
+            logger.warning(
+                "ffmpeg subtitle mux failed, falling back to separate subtitle upload for %s: %s",
+                video_path.name, proc.stderr[-1000:],
+            )
+            return None
+        return dst
+
     # -- subtitles ------------------------------------------------------
 
     async def _fetch_track_subtitles(
@@ -423,7 +466,6 @@ class AnimexDownloader:
                 file_path = await self._run_n_m3u8dl(
                     chosen["url"], headers, out_name, self.work_dir, on_progress=_on_progress
                 )
-                file_path = await asyncio.to_thread(self._remux_faststart, file_path)
             except Exception as exc:
                 logger.warning("Download via %s failed (%s), trying next server", provider_name, exc)
                 last_error = exc
@@ -436,6 +478,23 @@ class AnimexDownloader:
                 p for p in self._find_local_vtt_files(out_name, self.work_dir)
                 if p not in subtitle_paths
             ]
+
+            if subtitle_paths:
+                # Soft-sub: mux tracks into the container instead of
+                # uploading .vtt separately. On success the subs are now
+                # embedded, so subtitle_paths is cleared and the source
+                # .vtt files are deleted. On failure we fall back to the
+                # old behavior (remux for faststart, upload vtt as docs).
+                muxed = await asyncio.to_thread(self._mux_subtitles, file_path, subtitle_paths)
+                if muxed is not None:
+                    for sub_path in subtitle_paths:
+                        sub_path.unlink(missing_ok=True)
+                    file_path = muxed
+                    subtitle_paths = []
+                else:
+                    file_path = await asyncio.to_thread(self._remux_faststart, file_path)
+            else:
+                file_path = await asyncio.to_thread(self._remux_faststart, file_path)
 
             return DownloadResult(
                 quality=actual_quality,
@@ -500,6 +559,8 @@ class AnimexDownloader:
         )
         sent_messages.append(sent)
 
+        # Only reached now if subtitle muxing failed and we fell back to
+        # the old separate-upload path (see download_with_fallback).
         for sub_path in result.subtitle_paths:
             try:
                 sub_sent = await app.send_document(
