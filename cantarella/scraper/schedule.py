@@ -8,8 +8,8 @@ from pyrogram.types import Message
 
 # NOTE: adjust to match your actual project layout.
 from bot import app
-from animex import AnimexClient, AnimexAPIError
-from animexdl import sc, bi, _card
+from .animex import AnimexClient, AnimexAPIError
+from .animexdl import sc, bi, _card
 from search import RANDOM_IMAGES  # shared image pool, defined once in search.py
 
 client = AnimexClient()
