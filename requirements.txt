@@ -10,3 +10,5 @@ motor
 guessit
 ffmpeg
 psutil
+gzip
+zlib
