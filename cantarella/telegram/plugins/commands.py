@@ -47,9 +47,9 @@ async def handle_settings(client: Client, message):
     mapping_status_icon = "📦 BATCH" if mapping_batch_mode else "📄 SINGLE"
     mapping_toggle_label = "🔄 ᴍᴀᴘᴘɪɴɢ: ꜱɪɴɢʟᴇ" if mapping_batch_mode else "🔄 ᴍᴀᴘᴘɪɴɢ: ʙᴀᴛᴄʜ"
 
-    active_source = await db.get_user_setting(0, "active_source", "animetsu")
-    source_display = "🌐 ANIMETSU" if active_source == "animetsu" else "📺 ANIWATCH"
-    source_toggle_label = "🔄 ꜱᴡɪᴛᴄʜ ᴛᴏ ᴀɴɪᴡᴀᴛᴄʜ" if active_source == "animetsu" else "🔄 ꜱᴡɪᴛᴄʜ ᴛᴏ ᴀɴɪᴍᴇᴛꜱᴜ"
+    active_source = await db.get_user_setting(0, "active_source", "animex")
+    source_display = "🌐 ANIMEX" if active_source == "animex" else "📺 MIRURO"
+    source_toggle_label = "🔄 ꜱᴡɪᴛᴄʜ ᴛᴏ ᴍɪʀᴜʀᴏ" if active_source == "animex" else "🔄 ꜱᴡɪᴛᴄʜ ᴛᴏ ᴀɴɪᴍᴇx"
 
     caption = (
         "<blockquote><b>⚙️ ʙᴏᴛ ꜱᴇᴛᴛɪɴɢꜱ</b>\n\n"
