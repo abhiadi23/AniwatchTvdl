@@ -42,7 +42,7 @@ async def web_server():
     print(f"Web server started on port {port}")
 
 if __name__ == "__main__":
-    print("Aniwatchtv downloader Bot started")
+    print("Cantarella (Animex/Miruro) downloader Bot started")
 
     async def main():
         # Start the web server
