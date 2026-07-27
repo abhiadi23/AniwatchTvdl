@@ -28,8 +28,8 @@ async def on_toggle_ongoing(client: Client, callback_query):
     mapping_batch_mode = await db.get_user_setting(0, "mapping_batch_mode", True)
     mapping_status_icon = "📦 BATCH" if mapping_batch_mode else "📄 SINGLE"
 
-    active_source = await db.get_user_setting(0, "active_source", "animetsu")
-    source_display = "🌐 ANIMETSU" if active_source == "animetsu" else "📺 ANIWATCH"
+    active_source = await db.get_user_setting(0, "active_source", "animex")
+    source_display = "🌐 ANIMEX" if active_source == "animex" else "📺 MIRURO"
 
     caption = (
         "<blockquote><b>⚙️ ʙᴏᴛ ꜱᴇᴛᴛɪɴɢꜱ</b>\n\n"
@@ -39,7 +39,7 @@ async def on_toggle_ongoing(client: Client, callback_query):
         "ᴡʜᴇɴ ᴏɴ, ᴛʜᴇ ʙᴏᴛ ᴀᴜᴛᴏᴍᴀᴛɪᴄᴀʟʟʏ ᴄʜᴇᴄᴋꜱ ꜰᴏʀ ɴᴇᴡ ᴀɴɪᴍᴇ ᴇᴘɪꜱᴏᴅᴇꜱ ᴀɴᴅ ᴅᴏᴡɴʟᴏᴀᴅꜱ ᴛʜᴇᴍ.</blockquote>"
     )
     mapping_toggle_label = "🔄 ᴍᴀᴘᴘɪɴɢ: ꜱɪɴɢʟᴇ" if mapping_batch_mode else "🔄 ᴍᴀᴘᴘɪɴɢ: ʙᴀᴛᴄʜ"
-    source_toggle_label = "🔄 ꜱᴡɪᴛᴄʜ ᴛᴏ ᴀɴɪᴡᴀᴛᴄʜ" if active_source == "animetsu" else "🔄 ꜱᴡɪᴛᴄʜ ᴛᴏ ᴀɴɪᴍᴇᴛꜱᴜ"
+    source_toggle_label = "🔄 ꜱᴡɪᴛᴄʜ ᴛᴏ ᴍɪʀᴜʀᴏ" if active_source == "animex" else "🔄 ꜱᴡɪᴛᴄʜ ᴛᴏ ᴀɴɪᴍᴇx"
 
     buttons = InlineKeyboardMarkup([
         [InlineKeyboardButton(toggle_label, callback_data="toggle_ongoing")],
@@ -111,8 +111,8 @@ async def on_toggle_active_source(client: Client, callback_query):
     if not is_admin and callback_query.from_user.id != OWNER_ID:
         return await callback_query.answer("❌ You are not authorized to use this.", show_alert=True)
 
-    current_source = await db.get_user_setting(0, "active_source", "animetsu")
-    new_source = "aniwatch" if current_source == "animetsu" else "animetsu"
+    current_source = await db.get_user_setting(0, "active_source", "animex")
+    new_source = "miruro" if current_source == "animex" else "animex"
     await db.set_user_setting(0, "active_source", new_source)
 
     ongoing_enabled = await db.get_user_setting(0, "ongoing_enabled", False)
@@ -123,8 +123,8 @@ async def on_toggle_active_source(client: Client, callback_query):
     mapping_status_icon = "📦 BATCH" if mapping_batch_mode else "📄 SINGLE"
     mapping_toggle_label = "🔄 ᴍᴀᴘᴘɪɴɢ: ꜱɪɴɢʟᴇ" if mapping_batch_mode else "🔄 ᴍᴀᴘᴘɪɴɢ: ʙᴀᴛᴄʜ"
 
-    source_display = "🌐 ANIMETSU" if new_source == "animetsu" else "📺 ANIWATCH"
-    source_toggle_label = "🔄 ꜱᴡɪᴛᴄʜ ᴛᴏ ᴀɴɪᴡᴀᴛᴄʜ" if new_source == "animetsu" else "🔄 ꜱᴡɪᴛᴄʜ ᴛᴏ ᴀɴɪᴍᴇᴛꜱᴜ"
+    source_display = "🌐 ANIMEX" if new_source == "animex" else "📺 MIRURO"
+    source_toggle_label = "🔄 ꜱᴡɪᴛᴄʜ ᴛᴏ ᴍɪʀᴜʀᴏ" if new_source == "animex" else "🔄 ꜱᴡɪᴛᴄʜ ᴛᴏ ᴀɴɪᴍᴇx"
 
     caption = (
         "<blockquote><b>⚙️ ʙᴏᴛ ꜱᴇᴛᴛɪɴɢꜱ</b>\n\n"
