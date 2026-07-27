@@ -9,6 +9,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Literal, Optional
+from urllib.parse import urljoin
 
 from pyrogram import Client
 from pyrogram.enums import ParseMode
@@ -19,6 +20,40 @@ from .animex import AnimexClient
 logger = logging.getLogger("animexdl")
 
 DEFAULT_QUALITIES = ["360p", "720p", "1080p"]
+
+# Some providers report a single "auto"/"default" source instead of
+# discrete per-quality URLs — that URL is itself an HLS *master*
+# playlist listing multiple resolution variants. When we see one of
+# these tags we fetch and parse that playlist to get the real,
+# individually-downloadable variant URLs.
+AUTO_QUALITY_TAGS = {"auto", "default", "multi", "adaptive", ""}
+
+_RESOLUTION_RE = re.compile(r"RESOLUTION=(\d+)x(\d+)")
+_BANDWIDTH_RE = re.compile(r"BANDWIDTH=(\d+)")
+
+
+def _parse_master_playlist(text: str, base_url: str) -> list[dict[str, Any]]:
+    """Parse an HLS master playlist's ``#EXT-X-STREAM-INF`` variants into
+    ``{"quality": "1080p", "url": "..."}`` entries, resolving relative
+    variant URIs against the master playlist's own URL."""
+    variants: list[dict[str, Any]] = []
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        if not line.startswith("#EXT-X-STREAM-INF"):
+            continue
+        res_m = _RESOLUTION_RE.search(line)
+        if res_m:
+            quality = f"{int(res_m.group(2))}p"
+        else:
+            bw_m = _BANDWIDTH_RE.search(line)
+            quality = f"{int(bw_m.group(1)) // 1000}k" if bw_m else "unknown"
+        for nxt in lines[i + 1:]:
+            nxt = nxt.strip()
+            if not nxt or nxt.startswith("#"):
+                continue
+            variants.append({"quality": quality, "url": urljoin(base_url, nxt)})
+            break
+    return variants
 
 PROGRESS_UPDATE_STEP = 1.0   # minimum % change before editing the TG message again
 UPLOAD_UPDATE_STEP = 2.0
@@ -37,6 +72,19 @@ def sc(text: str) -> str:
 def bi(text: str) -> str:
     """Bold + italic combined (HTML, matches the bot's default ParseMode.HTML)."""
     return f"<b><i>{text}</i></b>"
+
+
+# Thumbnail used for every upload — lives at the repo root.
+THUMB_PATH = Path(__file__).resolve().parent.parent.parent / "thumb.jpg"
+
+AUDIO_LABELS = {"sub": "Audio: JP", "dub": "Dual Audio"}
+
+
+def _build_caption(anime_title: str, season: int, ep_num: int, quality: str, type_: str) -> str:
+    """Plain, unstyled upload caption — no small-caps/blockquote fonting."""
+    audio = AUDIO_LABELS.get(type_, type_.title())
+    title = anime_title or "Anime"
+    return f"@cantarellabots [S{season}-E{ep_num}] {title} [{quality}] [{audio}]"
 
 
 def _progress_bar(pct: float, length: int = 10) -> str:
@@ -205,6 +253,21 @@ class AnimexDownloader:
         lower_or_equal = [pair for pair in numeric if pair[0] <= target_int]
         return (lower_or_equal[-1] if lower_or_equal else numeric[0])[1]
 
+    def _fetch_master_variants(
+        self, master_url: str, headers: dict[str, str]
+    ) -> list[dict[str, Any]]:
+        """Fetch a provider's 'auto'/'default' URL and parse it as an HLS
+        master playlist, returning the real per-resolution variant URLs.
+        Runs synchronously — call via ``asyncio.to_thread``."""
+        resp = self.client.session.get(
+            master_url,
+            headers=headers,
+            timeout=self.client.timeout,
+            impersonate=self.client.impersonate,
+        )
+        resp.raise_for_status()
+        return _parse_master_playlist(resp.text, master_url)
+
     # -- N_m3u8DL-RE (async, streams live progress) -------------------------
 
     async def _run_n_m3u8dl(
@@ -290,13 +353,17 @@ class AnimexDownloader:
         )
 
     @staticmethod
-    def _remux_faststart(src: Path) -> Path:
-        dst = src.with_name(src.stem + "_fs" + src.suffix)
-        cmd = ["ffmpeg", "-y", "-i", str(src), "-c", "copy", "-movflags", "+faststart", str(dst)]
+    def _remux_to_mkv(src: Path) -> Path:
+        """Always deliver the final upload as an .mkv container (matroska
+        doesn't need the mp4-only +faststart flag to be streamable)."""
+        if src.suffix.lower() == ".mkv":
+            return src
+        dst = src.with_suffix(".mkv")
+        cmd = ["ffmpeg", "-y", "-i", str(src), "-c", "copy", str(dst)]
         proc = subprocess.run(cmd, capture_output=True, text=True)
         if proc.returncode != 0 or not dst.exists():
             logger.warning(
-                "ffmpeg +faststart remux failed, keeping original file for %s: %s",
+                "ffmpeg mkv remux failed, keeping original file for %s: %s",
                 src.name, proc.stderr[-1000:],
             )
             return src
@@ -437,21 +504,42 @@ class AnimexDownloader:
                 logger.info("Provider %s had no sources, trying next server", provider_name)
                 continue
 
+            # Base headers come from the same client/session that talked to
+            # the animex.one API (Origin/Referer/User-Agent all match), then
+            # anything the sources response itself supplies (e.g. per-CDN
+            # auth headers) is layered on top. Computed before quality
+            # selection since the auto/master-playlist expansion below
+            # also needs them (to fetch the playlist itself).
+            headers = {
+                **self.client.download_headers(),
+                **(data.get("headers") or {}),
+            }
+
             chosen = self._select_source_for_quality(sources, quality)
             if not chosen or not chosen.get("url"):
                 logger.info("Provider %s had no usable %s source, trying next server", provider_name, quality)
                 continue
 
-            actual_quality = chosen.get("quality") or quality
+            if (chosen.get("quality") or "").strip().lower() in AUTO_QUALITY_TAGS:
+                # This provider only exposes a single adaptive/master
+                # playlist instead of discrete per-quality URLs — pull the
+                # real resolution variants out of it and re-pick the
+                # closest match to what was requested.
+                try:
+                    variants = await asyncio.to_thread(
+                        self._fetch_master_variants, chosen["url"], headers
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to expand auto/master playlist for %s: %s", provider_name, exc
+                    )
+                    variants = []
+                if variants:
+                    resolved = self._select_source_for_quality(variants, quality)
+                    if resolved and resolved.get("url"):
+                        chosen = resolved
 
-            # Base headers come from the same client/session that talked to
-            # the animex.one API (Origin/Referer/User-Agent all match), then
-            # anything the sources response itself supplies (e.g. per-CDN
-            # auth headers) is layered on top.
-            headers = {
-                **self.client.download_headers(),
-                **(data.get("headers") or {}),
-            }
+            actual_quality = chosen.get("quality") or quality
 
             async def _on_progress(pct: float, speed: str, done: str, tot: str) -> None:
                 await self._edit_status(
@@ -492,9 +580,9 @@ class AnimexDownloader:
                     file_path = muxed
                     subtitle_paths = []
                 else:
-                    file_path = await asyncio.to_thread(self._remux_faststart, file_path)
+                    file_path = await asyncio.to_thread(self._remux_to_mkv, file_path)
             else:
-                file_path = await asyncio.to_thread(self._remux_faststart, file_path)
+                file_path = await asyncio.to_thread(self._remux_to_mkv, file_path)
 
             return DownloadResult(
                 quality=actual_quality,
@@ -518,12 +606,12 @@ class AnimexDownloader:
         result: DownloadResult,
         ep_num: int,
         anime_title: str = "",
+        season: int = 1,
         status_msg: Message | None = None,
         caption: str | None = None,
     ) -> list[Message]:
-        caption = caption or (
-            f"{bi(sc(anime_title or 'anime'))}\n"
-            f"{bi(sc(result.type_))} • {bi(result.quality)}"
+        caption = caption or _build_caption(
+            anime_title, season, ep_num, result.quality, result.type_
         )
 
         last_reported = -100.0
@@ -552,6 +640,7 @@ class AnimexDownloader:
         sent = await app.send_video(
             chat_id=chat_id,
             video=str(result.file_path),
+            thumb=str(THUMB_PATH) if THUMB_PATH.exists() else None,
             caption=caption,
             parse_mode=ParseMode.HTML,
             supports_streaming=True,
@@ -584,6 +673,7 @@ class AnimexDownloader:
         anime_id: str,
         ep_num: int,
         anime_title: str = "",
+        season: int = 1,
         qualities: list[str] | None = None,
         type_: Literal["sub", "dub"] = "sub",
         status_msg: Message | None = None,
@@ -608,7 +698,7 @@ class AnimexDownloader:
 
             sent = await self.upload_result(
                 app, chat_id, result, ep_num,
-                anime_title=anime_title, status_msg=status_msg,
+                anime_title=anime_title, season=season, status_msg=status_msg,
             )
             sent_messages.extend(sent)
 
