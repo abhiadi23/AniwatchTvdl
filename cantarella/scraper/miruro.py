@@ -1,6 +1,7 @@
 import base64
 import gzip
 import json
+import os
 import zlib
 
 from curl_cffi import requests
@@ -10,6 +11,9 @@ from curl_cffi import requests
 # ==========================================
 API_ENDPOINT = "https://www.miruro.to/api/secure/pipe"
 REFERER_URL = "https://www.miruro.to/"
+
+TOR_PROXY = os.environ.get("TOR_PROXY", "socks5://127.0.0.1:9050")
+"""SOCKS5 proxy used for every pipe request and for N_m3u8DL-RE downloads."""
 
 COMMON_HEADERS = {
     "Accept": "application/json, text/plain, */*",
@@ -157,11 +161,12 @@ def build_sources_payload(episode_id: str, provider: str, category: str, anilist
 # REQUEST HANDLING
 # ==========================================
 def fetch_data(e_param: str) -> tuple[str, dict]:
-    """Send the base64-encoded query to the secure pipe endpoint."""
+    """Send the base64-encoded query to the secure pipe endpoint via Tor."""
     response = requests.get(
         API_ENDPOINT,
         params={"e": e_param},
         headers=COMMON_HEADERS,
+        proxy=TOR_PROXY,
         impersonate="chrome",
         timeout=15
     )
