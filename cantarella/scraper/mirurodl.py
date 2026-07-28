@@ -20,6 +20,7 @@ from pyrogram.types import Message
 
 from .miruro import (
     COMMON_HEADERS,
+    TOR_PROXY,
     get_anime_episodes,
     get_episode_sources,
     search_anime,
@@ -293,6 +294,7 @@ class MiruroDownloader:
             headers=headers,
             timeout=self.timeout,
             impersonate=self.impersonate,
+            proxy=TOR_PROXY,
         )
         resp.raise_for_status()
         return _parse_master_playlist(resp.text, master_url)
@@ -361,6 +363,7 @@ class MiruroDownloader:
         cmd = [
             str(self.binary_path),
             m3u8_url,
+            "--proxy", TOR_PROXY,
             "--save-name", out_name,
             "--save-dir", str(out_dir),
             "--tmp-dir", str(out_dir / "tmp"),
@@ -373,7 +376,7 @@ class MiruroDownloader:
         for key, value in headers.items():
             cmd += ["--header", f"{key}: {value}"]
 
-        logger.info("Running N_m3u8DL-RE for %s -> %s", out_name, out_dir)
+        logger.info("Running N_m3u8DL-RE for %s -> %s (via %s)", out_name, out_dir, TOR_PROXY)
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
@@ -470,6 +473,7 @@ class MiruroDownloader:
                     url,
                     timeout=self.timeout,
                     impersonate=self.impersonate,
+                    proxy=TOR_PROXY,
                 )
                 resp.raise_for_status()
                 dest.write_bytes(resp.content)
