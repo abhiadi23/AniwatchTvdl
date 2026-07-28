@@ -17,7 +17,7 @@ async def on_toggle_ongoing(client: Client, callback_query):
     if not is_admin and callback_query.from_user.id != OWNER_ID:
         return await callback_query.answer("❌ You are not authorized to use this.", show_alert=True)
 
-    current_status = await db.get_user_setting(0, "ongoing_enabled", False)
+    current_status = await db.get_user_setting(0, "ongoing_enabled", True)
     new_status = not current_status
     await db.set_user_setting(0, "ongoing_enabled", new_status)
 
@@ -67,7 +67,7 @@ async def on_toggle_mapping_mode(client: Client, callback_query):
     new_mode = not current_mode
     await db.set_user_setting(0, "mapping_batch_mode", new_mode)
 
-    ongoing_enabled = await db.get_user_setting(0, "ongoing_enabled", False)
+    ongoing_enabled = await db.get_user_setting(0, "ongoing_enabled", True)
     status_icon  = "✅ ᴏɴ" if ongoing_enabled else "❌ ᴏꜰꜰ"
     toggle_label = "🔴 ᴛᴜʀɴ ᴏꜰꜰ" if ongoing_enabled else "🟢 ᴛᴜʀɴ ᴏɴ"
 
@@ -115,7 +115,7 @@ async def on_toggle_active_source(client: Client, callback_query):
     new_source = "miruro" if current_source == "animex" else "animex"
     await db.set_user_setting(0, "active_source", new_source)
 
-    ongoing_enabled = await db.get_user_setting(0, "ongoing_enabled", False)
+    ongoing_enabled = await db.get_user_setting(0, "ongoing_enabled", True)
     status_icon  = "✅ ᴏɴ" if ongoing_enabled else "❌ ᴏꜰꜰ"
     toggle_label = "🔴 ᴛᴜʀɴ ᴏꜰꜰ" if ongoing_enabled else "🟢 ᴛᴜʀɴ ᴏɴ"
 
