@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import re
 import shutil
 import subprocess
@@ -267,6 +269,56 @@ class AnimexDownloader:
         )
         resp.raise_for_status()
         return _parse_master_playlist(resp.text, master_url)
+
+    @staticmethod
+    def _probe_video(path: Path) -> tuple[int, int, int]:
+        """Return (duration_seconds, width, height) via ffprobe. Telegram
+        clients render an upload as a proper video player (with thumb and
+        duration bar) only when these are supplied explicitly — without
+        them, especially for .mkv, Telegram/Pyrogram can silently fall
+        back to showing it as a plain document."""
+        try:
+            proc = subprocess.run(
+                [
+                    "ffprobe", "-v", "error", "-select_streams", "v:0",
+                    "-show_entries", "stream=width,height",
+                    "-show_entries", "format=duration",
+                    "-of", "json", str(path),
+                ],
+                capture_output=True, text=True, timeout=30,
+            )
+            data = json.loads(proc.stdout or "{}")
+            stream = (data.get("streams") or [{}])[0]
+            width = int(stream.get("width") or 0)
+            height = int(stream.get("height") or 0)
+            duration = int(float((data.get("format") or {}).get("duration") or 0))
+            return duration, width, height
+        except Exception as exc:
+            logger.warning("ffprobe failed for %s: %s", path.name, exc)
+            return 0, 0, 0
+
+    @staticmethod
+    def _mp4_alias_for_mime(path: Path) -> Path:
+        """Pyrogram picks the upload's mime_type purely from the *path*
+        given to send_video(video=...) (via mimetypes.guess_type), not
+        from file_name — and Telegram clients decide whether to render
+        the inline video-player bubble largely off that mime_type.
+        'video/x-matroska' (.mkv) often renders as a plain document even
+        with correct duration/width/height, while 'video/mp4' reliably
+        shows the video bubble everywhere. So: upload through a same-
+        content hardlink named *.mp4 (mime_type becomes video/mp4), but
+        keep file_name= pointing at the real .mkv name so the file
+        Telegram actually stores/shows is still named/sent as .mkv."""
+        if path.suffix.lower() != ".mkv":
+            return path
+        alias = path.with_suffix(".mp4")
+        if alias.exists():
+            alias.unlink()
+        try:
+            os.link(path, alias)
+        except OSError:
+            shutil.copy2(path, alias)
+        return alias
 
     # -- N_m3u8DL-RE (async, streams live progress) -------------------------
 
@@ -540,6 +592,10 @@ class AnimexDownloader:
                         chosen = resolved
 
             actual_quality = chosen.get("quality") or quality
+            logger.info(
+                "Ep %s: provider %s resolved -> quality=%s url=%s...",
+                ep_num, provider_name, actual_quality, chosen["url"][:80],
+            )
 
             async def _on_progress(pct: float, speed: str, done: str, tot: str) -> None:
                 await self._edit_status(
@@ -550,6 +606,7 @@ class AnimexDownloader:
                     ),
                 )
 
+            logger.info("Ep %s: starting download via %s (%s)", ep_num, provider_name, actual_quality)
             try:
                 file_path = await self._run_n_m3u8dl(
                     chosen["url"], headers, out_name, self.work_dir, on_progress=_on_progress
@@ -558,6 +615,7 @@ class AnimexDownloader:
                 logger.warning("Download via %s failed (%s), trying next server", provider_name, exc)
                 last_error = exc
                 continue
+            logger.info("Ep %s: download finished -> %s", ep_num, file_path.name)
 
             subtitle_paths = await self._fetch_track_subtitles(
                 data.get("tracks") or [], out_name, self.work_dir
@@ -573,16 +631,24 @@ class AnimexDownloader:
                 # embedded, so subtitle_paths is cleared and the source
                 # .vtt files are deleted. On failure we fall back to the
                 # old behavior (remux for faststart, upload vtt as docs).
+                logger.info("Ep %s: muxing %d subtitle track(s) into container", ep_num, len(subtitle_paths))
                 muxed = await asyncio.to_thread(self._mux_subtitles, file_path, subtitle_paths)
                 if muxed is not None:
                     for sub_path in subtitle_paths:
                         sub_path.unlink(missing_ok=True)
                     file_path = muxed
                     subtitle_paths = []
+                    logger.info("Ep %s: subtitle mux OK -> %s", ep_num, file_path.name)
                 else:
+                    logger.warning("Ep %s: subtitle mux failed, falling back to plain mkv remux", ep_num)
                     file_path = await asyncio.to_thread(self._remux_to_mkv, file_path)
             else:
                 file_path = await asyncio.to_thread(self._remux_to_mkv, file_path)
+            logger.info(
+                "Ep %s: ready for upload -> %s (%s, %s)",
+                ep_num, file_path.name, actual_quality,
+                _format_size(file_path.stat().st_size) if file_path.exists() else "?",
+            )
 
             return DownloadResult(
                 quality=actual_quality,
@@ -637,16 +703,32 @@ class AnimexDownloader:
             )
 
         sent_messages: list[Message] = []
-        sent = await app.send_video(
-            chat_id=chat_id,
-            video=str(result.file_path),
-            thumb=str(THUMB_PATH) if THUMB_PATH.exists() else None,
-            caption=caption,
-            parse_mode=ParseMode.HTML,
-            supports_streaming=True,
-            progress=progress,
+        duration, width, height = await asyncio.to_thread(self._probe_video, result.file_path)
+        upload_path = await asyncio.to_thread(self._mp4_alias_for_mime, result.file_path)
+        logger.info(
+            "Uploading %s -> chat %s (ep %s, %s, %dx%d, %ds, mime-alias=%s)",
+            result.file_path.name, chat_id, ep_num, result.quality, width, height, duration,
+            upload_path.name,
         )
+        try:
+            sent = await app.send_video(
+                chat_id=chat_id,
+                video=str(upload_path),
+                file_name=result.file_path.name,
+                thumb=str(THUMB_PATH) if THUMB_PATH.exists() else None,
+                caption=caption,
+                parse_mode=ParseMode.HTML,
+                supports_streaming=True,
+                duration=duration,
+                width=width,
+                height=height,
+                progress=progress,
+            )
+        finally:
+            if upload_path != result.file_path:
+                upload_path.unlink(missing_ok=True)
         sent_messages.append(sent)
+        logger.info("Uploaded ep %s -> message_id=%s", ep_num, sent.id)
 
         # Only reached now if subtitle muxing failed and we fell back to
         # the old separate-upload path (see download_with_fallback).
@@ -681,6 +763,10 @@ class AnimexDownloader:
     ) -> list[Message]:
         qualities = qualities or DEFAULT_QUALITIES
         sent_messages: list[Message] = []
+        logger.info(
+            "Processing '%s' ep %s (anime_id=%s, type=%s, qualities=%s)",
+            anime_title, ep_num, anime_id, type_, qualities,
+        )
 
         for quality in qualities:
             try:
@@ -710,4 +796,7 @@ class AnimexDownloader:
         title_display = anime_title or sc("episode")
         ep_label = sc("episode")
         await self._edit_status(status_msg, _card([f"✅ {sc('done')}", "", f"{title_display} — {ep_label} {ep_num}"]))
+        logger.info(
+            "Finished '%s' ep %s: %d message(s) sent", anime_title, ep_num, len(sent_messages)
+        )
         return sent_messages
