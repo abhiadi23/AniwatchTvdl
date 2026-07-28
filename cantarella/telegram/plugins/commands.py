@@ -32,7 +32,7 @@ admin = filters.create(check_admin)
 @check_ban
 @check_fsub
 async def handle_settings(client: Client, message):
-    ongoing_enabled = await db.get_user_setting(0, "ongoing_enabled", False)
+    ongoing_enabled = await db.get_user_setting(0, "ongoing_enabled", True)
     status_icon = "✅ ON" if ongoing_enabled else "❌ OFF"
     toggle_label = "🔴 Turn OFF" if ongoing_enabled else "🟢 Turn ON"
 
