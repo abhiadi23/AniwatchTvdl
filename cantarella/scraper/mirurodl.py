@@ -363,20 +363,17 @@ class MiruroDownloader:
         cmd = [
             str(self.binary_path),
             m3u8_url,
-            "--proxy", TOR_PROXY,
+            "--custom-proxy", TOR_PROXY,
             "--save-name", out_name,
             "--save-dir", str(out_dir),
             "--tmp-dir", str(out_dir / "tmp"),
             "--auto-select",
             "--no-ansi-color",
-            "--del-after-done", "true",
-            "--binary-merge", "false",
-            "--check-segments-count", "false",
+            "--del-after-done"
         ]
         for key, value in headers.items():
             cmd += ["--header", f"{key}: {value}"]
-
-        logger.info("Running N_m3u8DL-RE for %s -> %s (via %s)", out_name, out_dir, TOR_PROXY)
+            logger.info("Running N_m3u8DL-RE for %s -> %s (via %s)", out_name, out_dir, TOR_PROXY)
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
