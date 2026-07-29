@@ -1,4 +1,3 @@
-#@cantarellabots
 from __future__ import annotations
 
 import asyncio
@@ -119,7 +118,14 @@ async def _fetch_recent_miruro() -> list[dict]:
         logger.warning("Failed to fetch miruro RELEASING feed: %s", exc)
         return []
 
-    media_list = data.get("media") or data.get("results") or data.get("data") or []
+    # browse_anime may return a list directly OR a dict like {"media": [...]}
+    if isinstance(data, list):
+        media_list = data
+    elif isinstance(data, dict):
+        media_list = data.get("media") or data.get("results") or data.get("data") or []
+    else:
+        media_list = []
+
     items: list[dict] = []
     for media in media_list:
         anilist_id = media.get("id")
