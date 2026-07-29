@@ -458,11 +458,12 @@ class MiruroDownloader:
         self, tracks: list[dict[str, Any]], out_name: str, out_dir: Path
     ) -> list[Path]:
         """Some providers return explicit subtitle track URLs in the
-        sources payload's `tracks` field. Providers that only hardsub
-        return an empty/null tracks list, so this is a no-op for those."""
+        sources payload's `tracks` / `subtitles` field. Providers that only
+        hardsub return an empty/null tracks list, so this is a no-op for those."""
         saved: list[Path] = []
         for i, track in enumerate(tracks or []):
-            url = track.get("url")
+            # Miruro uses "url" in tracks and "file" in subtitles — accept both
+            url = track.get("url") or track.get("file")
             if not url:
                 continue
             lang = track.get("lang") or track.get("language") or track.get("label") or f"sub{i}"
@@ -546,25 +547,31 @@ class MiruroDownloader:
                 last_error = exc
                 continue
 
-            sources = data.get("sources") or []
-            if not sources:
-                logger.info("Provider %s had no sources, trying next server", provider_name)
+            # -----------------------------------------------------------------
+            # FIX: Miruro returns "streams", not "sources". We also keep only
+            # HLS entries because N_m3u8DL-RE cannot consume embed pages.
+            # -----------------------------------------------------------------
+            streams = data.get("streams") or []
+            hls_streams = [s for s in streams if s.get("type") == "hls"]
+            if not hls_streams:
+                logger.info("Provider %s had no HLS streams, trying next server", provider_name)
                 continue
 
             # Base headers mirror what miruro_scraper.fetch_data sends to
             # the pipe endpoint, then anything the sources response itself
             # supplies (e.g. per-CDN auth headers) is layered on top.
-            # Computed before quality selection since the auto/master-
-            # playlist expansion below also needs them.
             headers = {
                 **COMMON_HEADERS,
                 **(data.get("headers") or {}),
             }
 
-            chosen = self._select_source_for_quality(sources, quality)
+            chosen = self._select_source_for_quality(hls_streams, quality)
             if not chosen or not chosen.get("url"):
-                logger.info("Provider %s had no usable %s source, trying next server", provider_name, quality)
+                logger.info("Provider %s had no usable %s stream, trying next server", provider_name, quality)
                 continue
+
+            # Remember the referer attached to this specific stream (needed for CDN auth)
+            stream_referer = chosen.get("referer")
 
             if (chosen.get("quality") or "").strip().lower() in AUTO_QUALITY_TAGS:
                 # This provider only exposes a single adaptive/master
@@ -586,6 +593,9 @@ class MiruroDownloader:
                         chosen = resolved
 
             actual_quality = chosen.get("quality") or quality
+            if stream_referer:
+                headers["Referer"] = stream_referer
+
             logger.info(
                 "Ep %s: provider %s resolved -> quality=%s url=%s...",
                 ep_num, provider_name, actual_quality, chosen["url"][:80],
@@ -612,8 +622,12 @@ class MiruroDownloader:
                 last_error = exc
                 continue
 
+            # -----------------------------------------------------------------
+            # FIX: Collect subtitles from both "tracks" and "subtitles" keys.
+            # -----------------------------------------------------------------
+            all_subtitle_tracks = (data.get("tracks") or []) + (data.get("subtitles") or [])
             subtitle_paths = await self._fetch_track_subtitles(
-                data.get("tracks") or [], out_name, self.work_dir
+                all_subtitle_tracks, out_name, self.work_dir
             )
             subtitle_paths += [
                 p for p in self._find_local_vtt_files(out_name, self.work_dir)
