@@ -1,4 +1,3 @@
-#@cantarellabots
 from __future__ import annotations
 
 import asyncio
@@ -135,7 +134,15 @@ def _animex_schedule_items(start: int, end: int) -> list[dict]:
 
 def _miruro_schedule_items(start: int, end: int) -> list[dict]:
     data = miruro_get_schedule(newest=True)
-    raw = data.get("airingSchedules") or data.get("schedules") or data.get("data") or []
+
+    # get_schedule may return a raw list or a dict wrapper
+    if isinstance(data, list):
+        raw = data
+    elif isinstance(data, dict):
+        raw = data.get("airingSchedules") or data.get("schedules") or data.get("data") or []
+    else:
+        raw = []
+
     out: list[dict] = []
     for it in raw:
         airing_at = it.get("airingAt")
