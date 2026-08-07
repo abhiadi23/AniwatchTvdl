@@ -24,10 +24,18 @@ logger = logging.getLogger("animexdl")
 DEFAULT_QUALITIES = ["360p", "720p", "1080p"]
 
 # Some providers report a single "auto"/"default" source instead of
-# discrete per-quality URLs — that URL is itself an HLS *master*
-# playlist listing multiple resolution variants. When we see one of
-# these tags we fetch and parse that playlist to get the real,
-# individually-downloadable variant URLs.
+# discrete per-quality URLs. Two different things can be going on here:
+#
+#   1. It's genuinely an HLS *master* playlist listing multiple resolution
+#      variants — we fetch and parse it to get the real per-quality URLs.
+#   2. It's actually just ONE fixed-resolution stream that happens to be
+#      *tagged* "auto" (confirmed in the wild: the CDN URL itself embeds
+#      a resolution like ".../720p1142.../..." and the "playlist" has no
+#      #EXT-X-STREAM-INF variants at all — there's nothing to expand).
+#
+# Case 2 used to silently re-download the identical file three times (once
+# per requested quality) and label it whatever was requested rather than
+# what it actually was. See `single_stream` handling below.
 AUTO_QUALITY_TAGS = {"auto", "default", "multi", "adaptive", ""}
 
 _RESOLUTION_RE = re.compile(r"RESOLUTION=(\d+)x(\d+)")
@@ -37,7 +45,10 @@ _BANDWIDTH_RE = re.compile(r"BANDWIDTH=(\d+)")
 def _parse_master_playlist(text: str, base_url: str) -> list[dict[str, Any]]:
     """Parse an HLS master playlist's ``#EXT-X-STREAM-INF`` variants into
     ``{"quality": "1080p", "url": "..."}`` entries, resolving relative
-    variant URIs against the master playlist's own URL."""
+    variant URIs against the master playlist's own URL. Returns an empty
+    list if the fetched playlist has no #EXT-X-STREAM-INF lines at all —
+    that means it wasn't actually a master playlist (see AUTO_QUALITY_TAGS
+    comment above)."""
     variants: list[dict[str, Any]] = []
     lines = text.splitlines()
     for i, line in enumerate(lines):
@@ -188,6 +199,11 @@ class DownloadResult:
     provider_name: str
     type_: str
     subtitle_paths: list[Path] = field(default_factory=list)
+    # True when this provider only ever exposed ONE actual stream (its
+    # "auto"-tagged source had no expandable master-playlist variants).
+    # process_episode uses this to stop requesting further qualities for
+    # this episode instead of re-downloading the identical file again.
+    single_stream: bool = False
 
 
 class DownloadFailedError(Exception):
@@ -572,11 +588,12 @@ class AnimexDownloader:
                 logger.info("Provider %s had no usable %s source, trying next server", provider_name, quality)
                 continue
 
-            if (chosen.get("quality") or "").strip().lower() in AUTO_QUALITY_TAGS:
-                # This provider only exposes a single adaptive/master
-                # playlist instead of discrete per-quality URLs — pull the
-                # real resolution variants out of it and re-pick the
-                # closest match to what was requested.
+            # Whether we managed to expand an "auto"-tagged source into
+            # real per-resolution variants via the master-playlist parse.
+            resolved_via_master = False
+            is_auto_tagged = (chosen.get("quality") or "").strip().lower() in AUTO_QUALITY_TAGS
+
+            if is_auto_tagged:
                 try:
                     variants = await asyncio.to_thread(
                         self._fetch_master_variants, chosen["url"], headers
@@ -590,6 +607,21 @@ class AnimexDownloader:
                     resolved = self._select_source_for_quality(variants, quality)
                     if resolved and resolved.get("url"):
                         chosen = resolved
+                        resolved_via_master = True
+                else:
+                    # No exception, just nothing to expand — this "auto" tag
+                    # was mislabeling a single fixed-resolution stream, not
+                    # a real adaptive master playlist. Downloading it once
+                    # is all that's possible; requesting it again under a
+                    # different quality label would just re-fetch the same
+                    # bytes.
+                    logger.info(
+                        "Provider %s's 'auto' source has no expandable variants — "
+                        "it's a single fixed-quality stream, not a master playlist (ep %s)",
+                        provider_name, ep_num,
+                    )
+
+            single_stream = is_auto_tagged and not resolved_via_master
 
             actual_quality = chosen.get("quality") or quality
             logger.info(
@@ -616,6 +648,17 @@ class AnimexDownloader:
                 last_error = exc
                 continue
             logger.info("Ep %s: download finished -> %s", ep_num, file_path.name)
+
+            if single_stream:
+                # Relabel from the literal "auto" tag to the stream's real
+                # resolution so captions/status don't say "[auto]".
+                _, _, probed_h = await asyncio.to_thread(self._probe_video, file_path)
+                if probed_h:
+                    actual_quality = f"{probed_h}p"
+                    logger.info(
+                        "Ep %s: single-stream provider — probed actual resolution as %s",
+                        ep_num, actual_quality,
+                    )
 
             subtitle_paths = await self._fetch_track_subtitles(
                 data.get("tracks") or [], out_name, self.work_dir
@@ -657,6 +700,7 @@ class AnimexDownloader:
                 provider_name=provider_name,
                 type_=type_,
                 subtitle_paths=subtitle_paths,
+                single_stream=single_stream,
             )
 
         raise DownloadFailedError(
@@ -792,6 +836,29 @@ class AnimexDownloader:
                 result.file_path.unlink(missing_ok=True)
                 for sub_path in result.subtitle_paths:
                     sub_path.unlink(missing_ok=True)
+
+            if result.single_stream:
+                # This provider only ever had one real stream — the other
+                # requested qualities would just be identical re-downloads
+                # under a different label, so stop here instead of hitting
+                # N_m3u8DL-RE again for the same bytes.
+                skipped = [q for q in qualities if q != quality]
+                if skipped:
+                    logger.info(
+                        "Ep %s: only one stream available (%s) — skipping remaining "
+                        "requested qualities %s (same provider, no adaptive variants)",
+                        ep_num, result.quality, skipped,
+                    )
+                    await self._edit_status(
+                        status_msg,
+                        _card([
+                            f"ℹ️ {sc('single quality available')}",
+                            "",
+                            f"{sc('only')} {result.quality} {sc('is available for this episode')}",
+                            f"{sc('skipped')}: {', '.join(skipped)}",
+                        ]),
+                    )
+                break
 
         title_display = anime_title or sc("episode")
         ep_label = sc("episode")
